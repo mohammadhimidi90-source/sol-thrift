@@ -622,7 +622,7 @@ function toast(text){
 // shrinks a photo in the browser before upload
 async function shrinkImage(file, maxSide, quality = .82, maxBytes = 700_000){
   const bmp = await createImageBitmap(file).catch(() => null);
-  if (!bmp) throw new Error("This file isn't an image we can read. Use JPG, PNG or WebP.");
+  if (!bmp) throw new Error(/hei[cf]/i.test(file.type + file.name) ? "iPhone HEIC photos can't be read here. Send the photo as JPG first, then add it." : "This file isn't an image we can read. Use JPG, PNG or WebP.");
   let side = maxSide, q = quality, url;
   for (let i = 0; i < 6; i++){
     const k = Math.min(1, side / Math.max(bmp.width, bmp.height));
@@ -1334,6 +1334,7 @@ const Admin = (() => {
     openEditor(`<form id="pForm" novalidate>
       <div class="sheet-head"><h2>${id ? "Edit product" : "New product"}</h2>${closeX}</div>
       <div class="sheet-body">
+        <div class="field"><span class="label">Photos</span><div class="photos" id="photos"></div><small>Pick as many photos as you like, all at once or one by one. The first one is the cover; use the arrows to reorder.</small></div>
         <div class="field"><label for="eName">Name</label><input id="eName" required value="${esc(p.name)}" placeholder="Camel Wool Overcoat"></div>
         <div class="grid2">
           <div class="field"><label for="eCat">Category</label><select id="eCat">${S.cats.map(c => `<option value="${esc(c.id)}" ${p.cat === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
@@ -1347,7 +1348,6 @@ const Admin = (() => {
           <small>Leave stock empty if you don't track it. 0 shows the size as sold out.</small>
           <div class="presets"><button type="button" class="mini-btn" data-add-size>Add size</button><button type="button" class="mini-btn" data-preset="XS,S,M,L,XL">XS–XL</button><button type="button" class="mini-btn" data-preset="S,M,L,XL,XXL">S–XXL</button><button type="button" class="mini-btn" data-preset="28,30,32,34,36,38">28–38</button><button type="button" class="mini-btn" data-preset="36,37,38,39,40,41,42">Shoes 36–42</button><button type="button" class="mini-btn" data-preset="One size">One size</button></div>
         </div>
-        <div class="field"><span class="label">Photos</span><div class="photos" id="photos"></div><small>The first photo is the cover. Photos are resized before upload.</small></div>
         <p class="err" id="eErr" hidden></p>
       </div>
       <div class="sheet-foot">${id ? `<button type="button" class="btn danger sm" data-del-product>Delete product</button>` : ""}<div class="r"><button type="button" class="btn ghost sm" data-close-ed>Cancel</button><button class="btn sm" id="eSave">Save</button></div></div>
@@ -1362,7 +1362,7 @@ const Admin = (() => {
     const el = $("#photos"); if (!el) return;
     el.innerHTML = E.photos.map((ph, i) => `<div class="photo">${i === 0 ? `<span class="first">Cover</span>` : ""}<img src="${esc(ph.url)}" alt="">
       <div class="pa"><button type="button" data-ph="${i}:-1" aria-label="Move left" ${i === 0 ? "disabled" : ""}>←</button><button type="button" data-ph="${i}:x" aria-label="Remove photo">✕</button><button type="button" data-ph="${i}:1" aria-label="Move right" ${i === E.photos.length - 1 ? "disabled" : ""}>→</button></div></div>`).join("")
-      + `<label class="drop" id="dropZone">+ Add photos<input type="file" id="photoInput" accept="image/*" multiple hidden></label>`;
+      + `<label class="drop" id="dropZone"><span>+ Add photos<br><small>pick several at once</small></span><input type="file" id="photoInput" accept="image/*" multiple hidden></label>`;
   }
   async function addPhotos(files){
     for (const f of files){
@@ -1379,8 +1379,13 @@ const Admin = (() => {
     err.hidden = true;
     const btn = $("#eSave"); btn.disabled = true; btn.textContent = "Saving…";
     try {
-      const images = [];
-      for (const ph of E.photos) images.push(ph.path || await api.upload(ph.url));
+      const images = [], toUpload = E.photos.filter(ph => !ph.path).length;
+      let k = 0;
+      for (const ph of E.photos){
+        if (!ph.path){ btn.textContent = `Uploading photo ${++k} of ${toUpload}…`; ph.path = await api.upload(ph.url); } // kept on the photo, so a retry doesn't upload it twice
+        images.push(ph.path);
+      }
+      btn.textContent = "Saving…";
       // cover thumbnail: remake it only when the cover photo changed
       let thumb = E.orig?.thumb || "";
       if (!images.length) thumb = "";
@@ -1394,7 +1399,15 @@ const Admin = (() => {
       const keep = new Set([...images, thumb]);
       [...(E.orig?.images || []), E.orig?.thumb].forEach(m => { if (m && !keep.has(m)) api.removeMedia(m).catch(() => {}); });
       toast("Product saved"); closeEditor();
-    } catch (x){ console.error(x); err.hidden = false; err.textContent = /Demo storage/.test(x.message) ? x.message : "Couldn't save. Check your connection and try again."; btn.disabled = false; btn.textContent = "Save"; }
+    } catch (x){
+      console.error(x); err.hidden = false; btn.disabled = false; btn.textContent = "Save";
+      const m = x.message || "";
+      err.textContent = /Demo storage/.test(m) ? m
+        : /row-level security|unauthorized|403/i.test(m) ? "Supabase refused the photo upload. Run the latest supabase-setup.sql in Supabase → SQL Editor, then press Save again."
+        : /bucket not found/i.test(m) ? "The photo storage is missing. Run supabase-setup.sql in Supabase → SQL Editor, then press Save again."
+        : /exceeded|too large|payload/i.test(m) ? "A photo is too large. Remove it and try a smaller one."
+        : `Couldn't save: ${m || "check your connection and try again."}`;
+    }
   }
 
   function editCat(id){
